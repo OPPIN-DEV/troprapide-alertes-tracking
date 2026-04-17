@@ -504,15 +504,42 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
   <script>
     /* ============================================================
-       SHARED DB
+       FIREBASE BACKEND (read-only)
        ============================================================ */
-    const DB_KEY = 'troprapide_delivery';
-    function getDB() {
-      try { return JSON.parse(localStorage.getItem(DB_KEY)) || { orders: {}, drivers: {}, log: [], revenue: 0 }; }
-      catch (e) { return { orders: {}, drivers: {}, log: [], revenue: 0 }; }
+    const FIREBASE_CONFIG = {
+      apiKey: "AIzaSyD0FL4ua8NUWKfwu_gGUL5TI1RkiNbBZnU",
+      authDomain: "troprapide-821a7.firebaseapp.com",
+      databaseURL: "https://troprapide-821a7-default-rtdb.firebaseio.com",
+      projectId: "troprapide-821a7"
+    };
+    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+    const _fbdb = firebase.database();
+
+    let _cache = { orders: {}, drivers: {}, log: [], revenue: 0 };
+
+    const ZONE_COORDS = {
+      'Cocody': { lat: 5.370, lng: -3.980 }, 'Koumassi': { lat: 5.290, lng: -4.010 },
+      'Treichville': { lat: 5.300, lng: -4.005 }, 'Plateau': { lat: 5.320, lng: -4.020 },
+      'Yopougon': { lat: 5.350, lng: -4.070 }, 'Adjamé': { lat: 5.360, lng: -4.025 }
+    };
+
+    function normalizeOrder(id, o) {
+      if (o.total == null && o.amount != null) o.total = Number(o.amount);
+      if (o.address == null && o.adresse != null) o.address = o.adresse;
+      if (!o.restaurantLat) { o.restaurantLat = 5.340; o.restaurantLng = -4.010; }
+      if (!o.lat && o.zone && ZONE_COORDS[o.zone]) {
+        const zc = ZONE_COORDS[o.zone];
+        o.lat = parseFloat((zc.lat + (Math.random() * 0.01 - 0.005)).toFixed(5));
+        o.lng = parseFloat((zc.lng + (Math.random() * 0.01 - 0.005)).toFixed(5));
+      }
+      return o;
     }
+
+    function getDB() { return _cache; }
     /* XSS sanitization */
     function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 
@@ -795,25 +822,27 @@
     }
 
     /* ============================================================
-       AUTO REFRESH
+       FIREBASE LISTENERS + INIT
        ============================================================ */
-    setInterval(() => {
+    _fbdb.ref('orders').on('value', snap => {
+      const orders = snap.val() || {};
+      Object.keys(orders).forEach(id => normalizeOrder(id, orders[id]));
+      _cache.orders = orders;
       renderAllOrders();
       if (currentOrderId) {
         renderOrderDetails(currentOrderId);
         updateMap(currentOrderId);
       }
-    }, 5000);
-
-    window.addEventListener('storage', e => {
-      if (e.key !== DB_KEY) return;
-      renderAllOrders();
-      if (currentOrderId) { renderOrderDetails(currentOrderId); updateMap(currentOrderId); }
     });
 
-    /* ============================================================
-       INIT
-       ============================================================ */
+    _fbdb.ref('livreurs').on('value', snap => {
+      _cache.drivers = snap.val() || {};
+      if (currentOrderId) {
+        renderOrderDetails(currentOrderId);
+        updateMap(currentOrderId);
+      }
+    });
+
     renderAllOrders();
 
     // Auto-track from URL param
