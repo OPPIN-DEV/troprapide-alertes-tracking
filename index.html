@@ -539,6 +539,17 @@
       return o;
     }
 
+    function normalizeDriver(id, d) {
+      if (!d.name && d.nom) d.name = d.nom;
+      if (!d.name && d.prenom) d.name = (d.prenom + ' ' + (d.nom || '')).trim();
+      if (!d.name) d.name = 'Livreur #' + String(id).slice(-4);
+      if (!d.avatar) d.avatar = '🏍️';
+      if (!d.lat) d.lat = 5.340;
+      if (!d.lng) d.lng = -4.010;
+      if (!d.status && d.statut) d.status = d.statut;
+      return d;
+    }
+
     function getDB() { return _cache; }
     /* XSS sanitization */
     function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
@@ -836,7 +847,9 @@
     });
 
     _fbdb.ref('livreurs').on('value', snap => {
-      _cache.drivers = snap.val() || {};
+      const raw = snap.val() || {};
+      Object.entries(raw).forEach(([id, d]) => normalizeDriver(id, d));
+      _cache.drivers = raw;
       if (currentOrderId) {
         renderOrderDetails(currentOrderId);
         updateMap(currentOrderId);
