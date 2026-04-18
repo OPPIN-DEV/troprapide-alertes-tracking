@@ -6,6 +6,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Tracking — TropRapide</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
   <style>
     :root {
       --bg: #000;
@@ -449,7 +451,7 @@
         <div class="header-sub">Suivi en temps réel — Abidjan</div>
       </div>
     </div>
-    <a href="app.html" class="back-btn">← Retour</a>
+    <a href="index.html" class="back-btn">← Accueil</a>
   </div>
 
   <!-- LAYOUT -->
@@ -480,7 +482,9 @@
       <!-- ALL ORDERS -->
       <div class="all-orders">
         <div class="all-title">📦 Commandes actives</div>
-        <div id="all-orders-list"></div>
+        <div id="all-orders-list">
+          <p style="color:var(--muted);font-size:.8rem;">Connexion Firebase…</p>
+        </div>
       </div>
 
     </div>
@@ -504,53 +508,24 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
   <script>
     /* ============================================================
-       FIREBASE BACKEND (read-only)
+       FIREBASE CONFIGURATION
        ============================================================ */
-    const FIREBASE_CONFIG = {
+    const firebaseConfig = {
       apiKey: "AIzaSyD0FL4ua8NUWKfwu_gGUL5TI1RkiNbBZnU",
       authDomain: "troprapide-821a7.firebaseapp.com",
       databaseURL: "https://troprapide-821a7-default-rtdb.firebaseio.com",
       projectId: "troprapide-821a7"
     };
-    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
-    const _fbdb = firebase.database();
+    if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+    const rtdb = firebase.database();
 
-    let _cache = { orders: {}, drivers: {}, log: [], revenue: 0 };
+    /* ============================================================
+       STATE (read-only — no writes)
+       ============================================================ */
+    let state = { orders: {}, drivers: {}, log: {}, revenue: 0 };
 
-    const ZONE_COORDS = {
-      'Cocody': { lat: 5.370, lng: -3.980 }, 'Koumassi': { lat: 5.290, lng: -4.010 },
-      'Treichville': { lat: 5.300, lng: -4.005 }, 'Plateau': { lat: 5.320, lng: -4.020 },
-      'Yopougon': { lat: 5.350, lng: -4.070 }, 'Adjamé': { lat: 5.360, lng: -4.025 }
-    };
-
-    function normalizeOrder(id, o) {
-      if (o.total == null && o.amount != null) o.total = Number(o.amount);
-      if (o.address == null && o.adresse != null) o.address = o.adresse;
-      if (!o.restaurantLat) { o.restaurantLat = 5.340; o.restaurantLng = -4.010; }
-      if (!o.lat && o.zone && ZONE_COORDS[o.zone]) {
-        const zc = ZONE_COORDS[o.zone];
-        o.lat = parseFloat((zc.lat + (Math.random() * 0.01 - 0.005)).toFixed(5));
-        o.lng = parseFloat((zc.lng + (Math.random() * 0.01 - 0.005)).toFixed(5));
-      }
-      return o;
-    }
-
-    function normalizeDriver(id, d) {
-      if (!d.name && d.nom) d.name = d.nom;
-      if (!d.name && d.prenom) d.name = (d.prenom + ' ' + (d.nom || '')).trim();
-      if (!d.name) d.name = 'Livreur #' + String(id).slice(-4);
-      if (!d.avatar) d.avatar = '🏍️';
-      if (!d.lat) d.lat = 5.340;
-      if (!d.lng) d.lng = -4.010;
-      if (!d.status && d.statut) d.status = d.statut;
-      return d;
-    }
-
-    function getDB() { return _cache; }
     /* XSS sanitization */
     function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 
@@ -559,12 +534,10 @@
        ============================================================ */
     const map = L.map('map', { zoomControl: true, attributionControl: false }).setView([5.34, -4.01], 13);
 
-    // Dark tile layer
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
       maxZoom: 19
     }).addTo(map);
 
-    // Custom icons
     function makeIcon(emoji, color) {
       return L.divIcon({
         html: `<div style="background:${color};width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.5);">${emoji}</div>`,
@@ -578,7 +551,6 @@
       client: makeIcon('📍', '#22C55E')
     };
 
-    // Persistent map markers
     let markers = { restaurant: null, driver: null, client: null, routeLine: null };
 
     function clearMarkers() {
@@ -591,7 +563,6 @@
        ============================================================ */
     let currentOrderId = null;
 
-    // Read URL param
     const urlParams = new URLSearchParams(window.location.search);
     const urlOrder = urlParams.get('order');
     if (urlOrder) { document.getElementById('order-input').value = urlOrder.toUpperCase(); }
@@ -599,15 +570,14 @@
     function trackOrder() {
       const input = document.getElementById('order-input').value.trim().toLowerCase();
       if (!input) { alert('Entrez un numéro de commande'); return; }
-      const db = getDB();
-      // Try exact match first
+      const orders = state.orders || {};
       let orderId = null;
-      if (db.orders[input]) { orderId = input; }
+      if (orders[input]) { orderId = input; }
       else {
-        // Try suffix match
-        orderId = Object.keys(db.orders).find(id => id.toLowerCase().includes(input) || id.toUpperCase().includes(input.toUpperCase()));
+        orderId = Object.keys(orders).find(id =>
+          id.toLowerCase().includes(input) || id.toUpperCase().includes(input.toUpperCase())
+        );
       }
-
       if (!orderId) { showEmptyState(`Commande "${input.toUpperCase()}" introuvable`); return; }
       currentOrderId = orderId;
       renderOrderDetails(orderId);
@@ -625,12 +595,10 @@
     }
 
     function renderOrderDetails(orderId) {
-      const db = getDB();
-      const o = db.orders[orderId];
+      const o = (state.orders || {})[orderId];
       if (!o) { showEmptyState('Commande introuvable'); return; }
 
-      const driver = o.assignedTo ? db.drivers[o.assignedTo] : null;
-      const elapsed = Math.floor((Date.now() - (o.createdAt || Date.now())) / 60000);
+      const driver = o.assignedTo ? (state.drivers || {})[o.assignedTo] : null;
       const statusColors = {
         'nouvelle': 'var(--orange)', 'acceptee': 'var(--green)', 'prete': 'var(--yellow)',
         'en-route': 'var(--blue)', 'livree': 'var(--green)'
@@ -644,25 +612,18 @@
         'en-route': '🔵 En route', 'livree': '✅ Livrée'
       };
 
-      // ETA estimation
       let etaMin = 0, progress = 0;
       if (o.status === 'en-route' && driver && o.dispatchedAt) {
         const sinceDispatch = (Date.now() - o.dispatchedAt) / 60000;
         const dist = getDistanceSimple(driver.lat, driver.lng, o.lat, o.lng);
-        etaMin = Math.max(0, Math.round(dist * 8 - sinceDispatch)); // ~8 min per km
+        etaMin = Math.max(0, Math.round(dist * 8 - sinceDispatch));
         const totalTime = dist * 8;
         progress = totalTime > 0 ? Math.min(99, (sinceDispatch / totalTime) * 100) : 50;
-      } else if (o.status === 'livree') {
-        progress = 100; etaMin = 0;
-      } else if (o.status === 'prete') {
-        etaMin = 10;
-      } else if (o.status === 'acceptee') {
-        etaMin = 20;
-      } else {
-        etaMin = 30;
-      }
+      } else if (o.status === 'livree') { progress = 100; etaMin = 0; }
+      else if (o.status === 'prete') { etaMin = 10; }
+      else if (o.status === 'acceptee') { etaMin = 20; }
+      else { etaMin = 30; }
 
-      // Timeline
       const steps = [
         { label: 'Commande reçue', status: 'done', time: o.createdAt },
         { label: 'Acceptée par la cuisine', status: ['acceptee', 'prete', 'en-route', 'livree'].includes(o.status) ? 'done' : 'pending', time: o.acceptedAt },
@@ -676,14 +637,14 @@
       <div class="oi-header">
         <span class="oi-id">#${orderId.slice(-8).toUpperCase()}</span>
         <span class="oi-badge" style="background:${statusBg[o.status] || '#111'};color:${statusColors[o.status] || '#fff'};">
-          ${statusLabel[o.status] || o.status}
+          ${statusLabel[o.status] || esc(o.status)}
         </span>
       </div>
 
       <div class="info-block">
         <div class="info-block-label">Client</div>
         <div class="info-block-val">${esc(o.client) || '—'}</div>
-        <div class="info-block-sub">📍 ${esc(o.address)} ${esc(o.zone)}</div>
+        <div class="info-block-sub">📍 ${o.address ? esc(o.address) + ' ' : ''} ${esc(o.zone) || ''}</div>
       </div>
 
       <div class="info-block">
@@ -695,9 +656,9 @@
       ${driver ? `
       <div class="info-block">
         <div class="info-block-label">Livreur</div>
-        <div class="info-block-val">${esc(driver.avatar) || '🏍️'} ${esc(driver.name)}</div>
+        <div class="info-block-val">${driver.avatar || '🏍️'} ${esc(driver.name)}</div>
         <div class="info-block-sub">Vitesse: ${driver.speed || 1} • GPS actif</div>
-      </div>` : ''}
+      </div>`: ''}
 
       ${o.status === 'en-route' ? `
       <div class="eta-card">
@@ -712,16 +673,16 @@
         <div style="display:flex;justify-content:space-between;font-size:.72rem;color:var(--muted);margin-top:6px;">
           <span>🏪 TropRapide</span>
           <span style="color:var(--yellow);">${Math.round(progress)}%</span>
-          <span>🏠 ${esc(o.zone)}</span>
+          <span>🏠 ${esc(o.zone || '')}</span>
         </div>
-      </div>` : ''}
+      </div>`: ''}
 
       ${o.status === 'livree' ? `
       <div style="background:#0a1a0a;border:1px solid var(--green);border-radius:12px;padding:12px;text-align:center;margin:12px 0;">
         <div style="font-size:1.5rem;margin-bottom:4px;">✅</div>
         <div style="font-weight:900;color:var(--green);">Commande livrée !</div>
         <div style="font-size:.8rem;color:var(--muted);margin-top:4px;">Merci d'avoir commandé chez TropRapide</div>
-      </div>` : ''}
+      </div>`: ''}
     </div>
 
     <div class="timeline">
@@ -749,38 +710,30 @@
     }
 
     function updateMap(orderId) {
-      const db = getDB();
-      const o = db.orders[orderId];
+      const o = (state.orders || {})[orderId];
       if (!o) return;
       clearMarkers();
 
       const bounds = [];
-
-      // Restaurant marker
       const restLat = o.restaurantLat || 5.340;
       const restLng = o.restaurantLng || -4.010;
+
       markers.restaurant = L.marker([restLat, restLng], { icon: icons.restaurant })
-        .addTo(map)
-        .bindPopup('<b>🍗 TropRapide</b><br>Restaurant');
+        .addTo(map).bindPopup('<b>🍗 TropRapide</b><br>Restaurant');
       bounds.push([restLat, restLng]);
 
-      // Delivery destination
       if (o.lat && o.lng) {
         markers.client = L.marker([o.lat, o.lng], { icon: icons.client })
-          .addTo(map)
-          .bindPopup(`<b>📍 ${esc(o.client)}</b><br>${esc(o.zone)}`);
+          .addTo(map).bindPopup(`<b>📍 ${esc(o.client)}</b><br>${esc(o.zone || '')}`);
         bounds.push([o.lat, o.lng]);
       }
 
-      // Driver position
-      const driver = o.assignedTo ? db.drivers[o.assignedTo] : null;
-      if (driver && ['en-route'].includes(o.status)) {
+      const driver = o.assignedTo ? (state.drivers || {})[o.assignedTo] : null;
+      if (driver && o.status === 'en-route') {
         markers.driver = L.marker([driver.lat, driver.lng], { icon: icons.driver })
-          .addTo(map)
-          .bindPopup(`<b>🏍️ ${esc(driver.name)}</b><br>En route`);
+          .addTo(map).bindPopup(`<b>🏍️ ${esc(driver.name)}</b><br>En route`);
         bounds.push([driver.lat, driver.lng]);
 
-        // Draw route line
         markers.routeLine = L.polyline([
           [restLat, restLng],
           [driver.lat, driver.lng],
@@ -788,20 +741,16 @@
         ], { color: '#3B82F6', weight: 2, dashArray: '8,6', opacity: .7 }).addTo(map);
       }
 
-      // Fit map to all markers
-      if (bounds.length > 1) {
-        map.fitBounds(bounds, { padding: [50, 50] });
-      } else if (bounds.length === 1) {
-        map.setView(bounds[0], 14);
-      }
+      if (bounds.length > 1) { map.fitBounds(bounds, { padding: [50, 50] }); }
+      else if (bounds.length === 1) { map.setView(bounds[0], 14); }
     }
 
     /* ============================================================
        ALL ORDERS LIST
        ============================================================ */
     function renderAllOrders() {
-      const db = getDB();
-      const active = Object.entries(db.orders || {})
+      const orders = state.orders || {};
+      const active = Object.entries(orders)
         .filter(([, o]) => o.status !== 'livree' && o.status !== 'annulee')
         .sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0))
         .slice(0, 10);
@@ -819,9 +768,9 @@
     <div class="order-pill" onclick="selectOrder('${id}')">
       <div>
         <div class="pill-id">#${id.slice(-8)}</div>
-        <div class="pill-info">${esc(o.client) || '—'} • ${esc(o.zone) || '—'}</div>
+        <div class="pill-info">${esc(o.client) || '—'} • ${esc(o.zone || '')}</div>
       </div>
-      <span class="pill-badge" style="color:${colors[o.status] || '#fff'};">${labels[o.status] || o.status}</span>
+      <span class="pill-badge" style="color:${colors[o.status] || '#fff'};">${labels[o.status] || esc(o.status)}</span>
     </div>`).join('');
     }
 
@@ -833,12 +782,10 @@
     }
 
     /* ============================================================
-       FIREBASE LISTENERS + INIT
+       FIREBASE REAL-TIME LISTENER (read-only)
        ============================================================ */
-    _fbdb.ref('orders').on('value', snap => {
-      const orders = snap.val() || {};
-      Object.keys(orders).forEach(id => normalizeOrder(id, orders[id]));
-      _cache.orders = orders;
+    rtdb.ref('/').on('value', snap => {
+      state = snap.val() || { orders: {}, drivers: {}, log: {}, revenue: 0 };
       renderAllOrders();
       if (currentOrderId) {
         renderOrderDetails(currentOrderId);
@@ -846,21 +793,12 @@
       }
     });
 
-    _fbdb.ref('livreurs').on('value', snap => {
-      const raw = snap.val() || {};
-      Object.entries(raw).forEach(([id, d]) => normalizeDriver(id, d));
-      _cache.drivers = raw;
-      if (currentOrderId) {
-        renderOrderDetails(currentOrderId);
-        updateMap(currentOrderId);
-      }
-    });
-
-    renderAllOrders();
-
-    // Auto-track from URL param
+    /* ============================================================
+       INIT
+       ============================================================ */
     if (urlOrder) {
-      setTimeout(() => { trackOrder(); }, 300);
+      // Wait for Firebase data before tracking
+      rtdb.ref('/orders').once('value', () => { trackOrder(); });
     }
   </script>
 </body>
