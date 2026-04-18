@@ -782,16 +782,28 @@
     }
 
     /* ============================================================
-       FIREBASE REAL-TIME LISTENER (read-only)
+       FIREBASE REAL-TIME LISTENERS (read-only, separate paths)
        ============================================================ */
-    rtdb.ref('/').on('value', snap => {
-      state = snap.val() || { orders: {}, drivers: {}, log: {}, revenue: 0 };
+    function onTrackingUpdate() {
       renderAllOrders();
       if (currentOrderId) {
         renderOrderDetails(currentOrderId);
         updateMap(currentOrderId);
       }
+    }
+
+    rtdb.ref('/orders').on('value', snap => {
+      state.orders = snap.val() || {};
+      onTrackingUpdate();
+    }, err => {
+      document.getElementById('all-orders-list').innerHTML =
+        `<p style="color:#EF4444;font-size:.8rem;">❌ Erreur Firebase: ${err.code}</p>`;
     });
+
+    rtdb.ref('/drivers').on('value', snap => {
+      state.drivers = snap.val() || {};
+      onTrackingUpdate();
+    }, () => {});
 
     /* ============================================================
        INIT
